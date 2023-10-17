@@ -1,130 +1,104 @@
-import streamlit as st
-import requests
 from bs4 import BeautifulSoup
-import re
-import time
-import json
+import requests
+import streamlit as st
+import random
 
-if 'summarized_content' not in st.session_state:
-    st.session_state.summarized_content = ""
+def spinner_with_text(text):
+    @Spinner(text)
+    def empty_function():
+        pass
+    empty_function()
+
+if 'titles' not in st.session_state:
+    st.session_state.titles = []
+if 'analysis' not in st.session_state:
+    st.session_state.analysis = ""
+if 'presses' not in st.session_state:
+    st.session_state.presses = []
+if 'initiated' not in st.session_state:
+    st.session_state.initiated = False
 
 API_KEY = st.secrets["api_key"]
-MAX_RETRY = 10
-WAIT_TIME = 5
-MAX_ARTICLE_SIZE = 2500  
+headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537'}
 
-def fetch_from_openai(model, messages, spinner_text):
-    with st.spinner(spinner_text):
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {API_KEY}',
-        }
-        data = {
-            "model": model,
-            'messages': messages,
-            'max_tokens': 5000,
-            'temperature': 0.2,
-        }
-        for i in range(MAX_RETRY):
-            response = requests.post(
-                'https://api.openai.com/v1/chat/completions',
-                headers=headers,
-                json=data
-            )
-            if response.status_code == 200:
-                return response.json()['choices'][0]['message']['content'].strip()
-            elif response.status_code == 429:
-                time.sleep(WAIT_TIME)
-            else:
-                st.error(f"Error: {response.status_code}, {response.json()}")
-                return None
-    st.error(f"{MAX_RETRY}번 시도하고 실패함. 잠시 후 다시 해보세요.")
-    return None
+def fetch_titles(base_url, num_pages):
+    all_titles = []
+    all_presses = []
+    for i in range(1, num_pages + 1):
+        url = f"{base_url}&page={i}"
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        titles = soup.select('.sh_text_headline.nclicks\(cls_pol\.clsart\)')
+        presses = soup.select('.sh_text_press')
+        for title, press in zip(titles, presses):
+            all_titles.append(title.text)
+            all_presses.append(press.text)
+    return all_titles, all_presses
 
-def crawl_and_get_article(url, index):
-    crawled_article = {}
-    for _ in range(MAX_RETRY):
-        r = requests.get(url)
-        if r.status_code == 200:
-            break
-        elif r.status_code == 429:
-            time.sleep(WAIT_TIME)
-        else:
-            st.error(f"Error: {r.status_code}")
-            return None
+def fetch_from_openai(titles, prompt, tokens=200):
+    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {API_KEY}'}
+    data = {'model': 'gpt-4', 'messages': [{"role": "user", "content": prompt}, {"role": "system", "content": '\n'.join(titles)}], 'max_tokens': tokens}
+    response = requests.post('https://api.openai.com/v1/chat/completions', headers=headers, json=data)
+    return response.json()['choices'][0]['message']['content'].strip() if response.status_code == 200 else f"Error: {response.status_code}"
 
-    soup = BeautifulSoup(r.text, "html.parser")
-    title = soup.select_one('.media_end_head_title')
-    title_text = title.get_text(strip=True) if title else f"Title {index} not found"
-    article = soup.select_one('article#dic_area')
-    article_text = article.get_text(strip=True) if article else f"Article {index} not found"
-    article_text = re.sub(r'[\t\r\n]', ' ', article_text)
+def filter_titles_by_keyword(titles, keyword):
+    return [title for title in titles if keyword.lower() in title.lower()]
 
-    if len(article_text) > MAX_ARTICLE_SIZE:  
-        return None
+st.title("미디어랩 타이틀봇 프로젝트 (정치)")
 
-    crawled_article = {"title": title_text, "content": article_text}
-
-    with open(f'crawled_article_{index}.json', 'w') as f:
-        json.dump(crawled_article, f)
-    
-    return crawled_article
-
-def main():
-    st.title("미디어랩 뉴스봇 보고봇 Project")
-    
-    keyword1 = st.text_input("1번 검색어 : ")
-    keyword2 = st.text_input("2번 검색어 : ")
-    keyword3 = st.text_input("3번 검색어 : ")
-    
-    if st.button("이슈 가져오기"):
-        base_url = "https://search.naver.com/search.naver?sm=tab_hty.top&where=news&query="
-        search_url = base_url + keyword1 + "+" + keyword2 + "+" + keyword3
-        r = requests.get(search_url)
-        soup = BeautifulSoup(r.text, "html.parser")
-        naver_news_links = [a_tag['href'] for a_tag in soup.select('.info') if '네이버뉴스' in a_tag.text]
-
-        if not naver_news_links:
-            st.markdown("<span style='color:red'>검색어를 다시 조정해서 시도해주세요.</span>", unsafe_allow_html=True)
-            return
-
-        summarized_content = ""
-
-        crawled_count = 0  
-        for index, link in enumerate(naver_news_links):
-            if crawled_count >= 3:  
-                break
-            crawled_article = crawl_and_get_article(link, index + 1)
-            if crawled_article is None:  
-                continue  
-
-            crawled_count += 1  
-
-            spinner_text = [
-                "첫 기사를 GPT4가 정리 하고 있습니다.",
-                "다음 기사를 GPT4가 정리하고 있습니다.",
-                "마지막 기사를 GPT4가 정리하고 있습니다."
-            ][crawled_count - 1]  
-            summarized_content += fetch_from_openai("gpt-4", [
-                {"role": "user",
-                 "content": f"{crawled_article['title']} 및 {crawled_article['content']} 내용들을 잘 정리해서 신문 기사 스타일의 보고 자료를 만들어. 다루는 공통된 내용과 공통되지 않은 내용 모두 포함해 전체 내용이 잘 드러나는 기사 스타일의 보고 자료로 만들거야. 키워드, 숫자 등을 잘 확인해. '눈길을 끌었다' '주목된다' 등 판단이나 창의적인 내용들은 빼고 2500자 이내로 써 줘."}  # 수정한 부분
-            ], spinner_text)
+if not st.session_state.initiated:
+    keyword = st.text_input("키워드가 될 단어를 하나만 넣어주세요 :", key='keyword')
+    if st.button("시작하기", key="start-button"):
+        if not keyword:
+            st.markdown("<span style='color:red'>키워드를 넣지 않으셔서 지금 이슈 기사를 모두 받아 옵니다.</span>", unsafe_allow_html=True)
         
-        st.session_state.summarized_content = summarized_content
-        st.write(st.session_state.summarized_content)
+        with st.spinner('AI가 일하고 있습니다. 10초만 기다려주세요!'):
+            st.session_state.initiated = True
+            st.session_state.titles, st.session_state.presses = fetch_titles("https://news.naver.com/main/main.naver?mode=LSD&mid=shm&sid1=100", 30)
+            if keyword:
+                st.session_state.titles = filter_titles_by_keyword(st.session_state.titles, keyword)
+            st.session_state.analysis = fetch_from_openai(st.session_state.titles, "크롤링 된 기사 제목들이 어떤 내용을 다루고 있는지 200자 이내로 분석해 줘.")
+else:
+    keyword = st.text_input("키워드가 될 단어를 하나만 넣어주세요 :", value=st.session_state.get('keyword', ''), key='keyword')
+    if st.button("다시 시작하기", key="restart-button"):
+        with st.spinner('AI가 일하고 있습니다. 10초만 기다려주세요!'):
+            st.session_state.initiated = True  # 작업을 다시 시작
+            st.session_state.titles, st.session_state.presses = fetch_titles("https://news.naver.com/main/main.naver?mode=LSD&mid=shm&sid1=100", 30)
+            if keyword:
+                st.session_state.titles = filter_titles_by_keyword(st.session_state.titles, keyword)
+            st.session_state.analysis = fetch_from_openai(st.session_state.titles, "크롤링 된 기사 제목들이 어떤 내용을 다루고 있는지 200자 이내로 분석해 줘.")
 
-    prompt = st.text_area("리드문을 대략 써서 넣으세요.", height=300)
 
-    if st.button("생성하기"):
-        if len(prompt) <= 10:
-            st.markdown("<span style='color:red'>10자 이상 써 주세요.</span>", unsafe_allow_html=True)
-        else:
-            with st.spinner('GPT-4가 기사로 만들고 있어요.'):
-                article_content = fetch_from_openai("gpt-4", [
-                    {"role": "user",
-                     "content": f"{st.session_state.summarized_content} 를 토대로 신문 기사를 쓸거야. 650자에서 1500자 내로 기사를 써 줘. 특히 숫자와 관련된 내용은 모두 나오도록 해 줘. 기사처럼 줄바꿈을 특히 잘 활용해. 앞서 작성한 리드문 '{prompt}'에서 기사를 시작해. 정리된 내용 중에서 리드문과 관련성이 높은 내용들을 중심으로 기사를 써 줘."}
-                ], '좀 오래 걸릴 수 있어요 ㅎㅎ 기다려주세요.')
-                st.write(article_content)
+if st.session_state.initiated:
+    st.subheader("AI의 기사 제목 분석 결과")
+    st.write(st.session_state.analysis)
 
-if __name__ == "__main__":
-    main()
+    # 새로운 부분: 키워드 입력 필드 3개 추가
+    keyword1 = st.text_input("첫 번째 키워드를 입력해주세요 :", key='keyword1')
+    keyword2 = st.text_input("두 번째 키워드를 입력해주세요 :", key='keyword2')
+    keyword3 = st.text_input("세 번째 키워드를 입력해주세요 :", key='keyword3')
+    
+    # 새로운 부분: 키워드에 따른 기사 제목 필터링
+    selected_titles = []
+    if keyword1:
+        selected_titles += filter_titles_by_keyword(st.session_state.titles, keyword1)
+    if keyword2:
+        selected_titles += filter_titles_by_keyword(st.session_state.titles, keyword2)
+    if keyword3:
+        selected_titles += filter_titles_by_keyword(st.session_state.titles, keyword3)
+    
+    if st.button("기사 제목 만들기", key="generate-similar-titles-button"):
+        # 선택된 기사 제목을 사용해 GPT-4로부터 제목을 생성
+        with st.spinner('GPT-4가 기사 제목을 만들고 있어'):
+            if selected_titles:  # 선택된 기사 제목이 있다면
+                prompt = "selected_titles의 기사 제목들 중에서 5개를 선정해서 각각 95% 이상 똑같은 느낌으로 조금만 수정해 줘. 특히 원래 기사 제목의 어순과 말투 등이 비슷해야 해. 22자 정도에 맞춰서 만들어. 창의적인 표현을 쓰지마. [] 이런 괄호는 빼. 각 기사 제목 앞에 숫자를 붙혀 줘."
+                similar_titles = fetch_from_openai(selected_titles, prompt, tokens=500)
+                st.subheader("AI가 생성한 유사한 기사 제목")
+                st.write(similar_titles)
+            else:
+                st.markdown("<span style='color:red'>적합한 기사 제목을 찾지 못했습니다.</span>", unsafe_allow_html=True)
+
+
+    st.subheader("이슈가 되고 있는 정치부 기사들")
+    for title, press in zip(st.session_state.titles, st.session_state.presses[:len(st.session_state.titles)]):
+        st.markdown(f"{title} - <span style='color:blue'>{press}</span>", unsafe_allow_html=True)
