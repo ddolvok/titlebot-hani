@@ -91,7 +91,7 @@ if st.session_state.initiated:
         # 선택된 기사 제목을 사용해 GPT-4로부터 제목을 생성
         with st.spinner('GPT-4가 기사 제목을 만들고 있어'):
             if selected_titles:  # 선택된 기사 제목이 있다면
-                prompt = "selected_titles의 기사 제목들을 그대로 5개를 뽑아 줘. 뽑은 기사 제목들을 거의 똑같이 보이게 미세하게 수정해 줘. 원래 제목에 없는 단어를 절대 추가하지 마. 원래 제목에서 " " 이렇게 큰 따옴표와 ' ' 이렇게 작은 따옴표에 들어있는 내용들은 똑같게 유지해. () [] 이런 괄호들에 들어있는 내용은 무조건 빼. 새롭게 뽑은 기사 제목만 보여주면 돼."
+                prompt = "selected_titles의 기사 제목들을 그대로 5개를 뽑아 줘. 뽑은 기사 제목들을 90% 이상을 유지하면서 미세하게 수정해 줘. 원래 제목에 없는 단어를 절대 추가하지 마. 원래 제목에서 " " 이렇게 큰 따옴표와 ' ' 이렇게 작은 따옴표에 들어있는 내용들은 똑같게 유지해. () [] 이런 괄호들에 들어있는 내용은 무조건 빼. 새롭게 만들어 준 기사 제목만 보여줘."
                 similar_titles = fetch_from_openai(selected_titles, prompt, tokens=500)
                 st.subheader("AI가 생성한 유사한 기사 제목")
                 st.write(similar_titles)
